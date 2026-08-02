@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kết nối Senergy Cloud Inverter",
+        "description": "Nhập thông tin tài khoản cloudinverter.net và các giá trị 'sign' bắt được từ DevTools (F12 > Network > lọc 'Inverterapi').",
+        "data": {
+          "member_id": "Tên đăng nhập (MemberID)",
+          "password": "Mật khẩu",
+          "login_sign": "Sign của UserLogin_v1",
+          "goods_id": "GoodsID của biến tần (vd: 2616-85081020PH)",
+          "data_sign": "Sign của InverterDetailInfoNewone",
+          "device_name": "Tên thiết bị hiển thị trong HA"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Đăng nhập thất bại, kiểm tra lại MemberID/Password/login_sign",
+      "cannot_fetch_data": "Không lấy được dữ liệu, kiểm tra lại GoodsID/data_sign",
+      "cannot_connect": "Không kết nối được tới cloudinverter.net",
+      "unknown": "Lỗi không xác định"
+    },
+    "abort": {
+      "already_configured": "Thiết bị này đã được cấu hình"
+    }
+  }
+}

@@ -1,9 +1,13 @@
 """Sensor entities cho Senergy Cloud Inverter.
 
-Danh sách sensor được map gần như đầy đủ từ toàn bộ field trả về của
-endpoint InverterDetailInfoNewone. Sensor nào không cần, bạn có thể vô
-hiệu hoá trực tiếp trong HA: Settings > Devices & Services > thiết bị
-Senergy > chọn entity > bánh răng > "Enabled" tắt đi, không cần sửa code.
+Danh sách sensor map từ field của endpoint InverterDetailInfoNewone.
+Sensor nào không cần, tắt trong HA: Settings > Devices & Services >
+thiết bị Senergy > entity > bánh răng > tắt "Enabled", không cần sửa code.
+
+Lưu ý đơn vị (đã đối chiếu với dữ liệu thật có pin PYLON):
+- batChrg / batDischrg  : điện năng sạc / xả pin HÔM NAY, đơn vị kWh.
+- toPbat / fromPbat     : công suất đang sạc vào / xả ra khỏi pin, đơn vị W.
+- Pdc                   : công suất từng chuỗi PV, đơn vị kW.
 """
 from __future__ import annotations
 
@@ -71,581 +75,177 @@ class SenergySensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any] = lambda data: None
 
 
+_W = UnitOfPower.WATT
+_KW = UnitOfPower.KILO_WATT
+_KWH = UnitOfEnergy.KILO_WATT_HOUR
+_V = UnitOfElectricPotential.VOLT
+_A = UnitOfElectricCurrent.AMPERE
+_HZ = UnitOfFrequency.HERTZ
+_C = UnitOfTemperature.CELSIUS
+
+_POWER = SensorDeviceClass.POWER
+_ENERGY = SensorDeviceClass.ENERGY
+_VOLTAGE = SensorDeviceClass.VOLTAGE
+_CURRENT = SensorDeviceClass.CURRENT
+_FREQ = SensorDeviceClass.FREQUENCY
+_TEMP = SensorDeviceClass.TEMPERATURE
+
+_MEAS = SensorStateClass.MEASUREMENT
+_TOTAL = SensorStateClass.TOTAL_INCREASING
+
+_DIAG = EntityCategory.DIAGNOSTIC
+
+
+def _num(key: str, name: str, field: str, unit: Any, dev: Any, state: Any, **kw: Any):
+    """Sensor số lấy từ field cấp 1 của JSON."""
+    return SenergySensorDescription(
+        key=key,
+        name=name,
+        native_unit_of_measurement=unit,
+        device_class=dev,
+        state_class=state,
+        value_fn=lambda d, f=field: _to_float(d.get(f)),
+        **kw,
+    )
+
+
+def _nested(
+    key: str, name: str, field: str, idx: int, unit: Any, dev: Any, state: Any, **kw: Any
+):
+    """Sensor số lấy từ d['data'][field][idx] (AC / chuỗi PV)."""
+    return SenergySensorDescription(
+        key=key,
+        name=name,
+        native_unit_of_measurement=unit,
+        device_class=dev,
+        state_class=state,
+        value_fn=lambda d, f=field, i=idx: _to_float(_get(d, "data", f), i),
+        **kw,
+    )
+
+
+def _text(key: str, name: str, fn: Callable[[dict[str, Any]], Any], **kw: Any):
+    """Sensor văn bản / chẩn đoán."""
+    return SenergySensorDescription(key=key, name=name, value_fn=fn, **kw)
+
+
+_OFF = {"entity_registry_enabled_default": False}
+
 SENSOR_TYPES: tuple[SenergySensorDescription, ...] = (
     # ---------- Tổng quan AC / sản lượng ----------
-    SenergySensorDescription(
-        key="pac",
-        name="Công suất AC",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Pac")),
-    ),
-    SenergySensorDescription(
-        key="ac_voltage",
-        name="Điện áp AC đầu ra",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(_get(d, "data", "Vac")),
-    ),
-    SenergySensorDescription(
-        key="ac_current",
-        name="Dòng điện AC đầu ra",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(_get(d, "data", "Iac")),
-    ),
-    SenergySensorDescription(
-        key="ac_frequency",
-        name="Tần số AC đầu ra",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(_get(d, "data", "Fac")),
-    ),
-    SenergySensorDescription(
-        key="e_today",
-        name="Sản lượng hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("EToday")),
-    ),
-    SenergySensorDescription(
-        key="e_total",
-        name="Tổng sản lượng",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("ETotal")),
-    ),
-    SenergySensorDescription(
-        key="peak_power",
-        name="Công suất đỉnh",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: _to_float(d.get("Peackpower")),
-    ),
-    SenergySensorDescription(
-        key="total_dc_power",
-        name="Tổng công suất DC (PV)",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("TotalDCpower")),
-    ),
-    SenergySensorDescription(
-        key="temperature",
-        name="Nhiệt độ biến tần",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("Tntc")),
-    ),
-    SenergySensorDescription(
-        key="self_use_rate",
-        name="Tỷ lệ tự dùng",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:home-lightning-bolt",
-        value_fn=lambda d: _to_float(d.get("Dailyself_userate")),
-    ),
-    SenergySensorDescription(
-        key="self_sufficiency_rate",
-        name="Tỷ lệ tự cung tự cấp",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:solar-power",
-        value_fn=lambda d: _to_float(d.get("Dailyself_sufficiencyrate")),
-    ),
+    _nested("pac", "Công suất AC", "Pac", 0, _W, _POWER, _MEAS),
+    _nested("ac_voltage", "Điện áp AC đầu ra", "Vac", 0, _V, _VOLTAGE, _MEAS, **_OFF),
+    _nested("ac_current", "Dòng điện AC đầu ra", "Iac", 0, _A, _CURRENT, _MEAS, **_OFF),
+    _nested("ac_frequency", "Tần số AC đầu ra", "Fac", 0, _HZ, _FREQ, _MEAS, **_OFF),
+    _num("e_today", "Sản lượng hôm nay", "EToday", _KWH, _ENERGY, _TOTAL),
+    _num("e_total", "Tổng sản lượng", "ETotal", _KWH, _ENERGY, _TOTAL),
+    _num("peak_power", "Công suất đỉnh", "Peackpower", _W, _POWER, None,
+         entity_category=_DIAG),
+    _num("total_dc_power", "Tổng công suất DC (PV)", "TotalDCpower", _W, _POWER, _MEAS),
+    _num("temperature", "Nhiệt độ biến tần", "Tntc", _C, _TEMP, _MEAS),
+    _num("self_use_rate", "Tỷ lệ tự dùng", "Dailyself_userate", PERCENTAGE, None, _MEAS,
+         icon="mdi:home-lightning-bolt"),
+    _num("self_sufficiency_rate", "Tỷ lệ tự cung tự cấp", "Dailyself_sufficiencyrate",
+         PERCENTAGE, None, _MEAS, icon="mdi:solar-power"),
 
-    # ---------- DC / chuỗi PV (MPPT string 1 & 2) ----------
-    SenergySensorDescription(
-        key="dc_voltage_string1",
-        name="Điện áp PV chuỗi 1",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Vdc"), 0),
-    ),
-    SenergySensorDescription(
-        key="dc_current_string1",
-        name="Dòng điện PV chuỗi 1",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Idc"), 0),
-    ),
-    SenergySensorDescription(
-        key="dc_power_string1",
-        name="Công suất PV chuỗi 1",
-        native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Pdc"), 0),
-    ),
-    SenergySensorDescription(
-        key="dc_voltage_string2",
-        name="Điện áp PV chuỗi 2",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Vdc"), 1),
-    ),
-    SenergySensorDescription(
-        key="dc_current_string2",
-        name="Dòng điện PV chuỗi 2",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Idc"), 1),
-    ),
-    SenergySensorDescription(
-        key="dc_power_string2",
-        name="Công suất PV chuỗi 2",
-        native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(_get(d, "data", "Pdc"), 1),
-    ),
+    # ---------- DC / chuỗi PV (Pdc đơn vị kW) ----------
+    _nested("dc_voltage_string1", "Điện áp PV chuỗi 1", "Vdc", 0, _V, _VOLTAGE, _MEAS),
+    _nested("dc_current_string1", "Dòng điện PV chuỗi 1", "Idc", 0, _A, _CURRENT, _MEAS),
+    _nested("dc_power_string1", "Công suất PV chuỗi 1", "Pdc", 0, _KW, _POWER, _MEAS),
+    _nested("dc_voltage_string2", "Điện áp PV chuỗi 2", "Vdc", 1, _V, _VOLTAGE, _MEAS),
+    _nested("dc_current_string2", "Dòng điện PV chuỗi 2", "Idc", 1, _A, _CURRENT, _MEAS),
+    _nested("dc_power_string2", "Công suất PV chuỗi 2", "Pdc", 1, _KW, _POWER, _MEAS),
 
     # ---------- Lưới điện ----------
-    SenergySensorDescription(
-        key="grid_voltage",
-        name="Điện áp lưới",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("gridVac")),
-    ),
-    SenergySensorDescription(
-        key="grid_current",
-        name="Dòng điện lưới",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("gridIac")),
-    ),
-    SenergySensorDescription(
-        key="grid_frequency",
-        name="Tần số lưới",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("gridFac")),
-    ),
-    SenergySensorDescription(
-        key="grid_power",
-        name="Công suất lưới",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("gridCurrpac")),
-    ),
-    SenergySensorDescription(
-        key="e_to_grid_today",
-        name="Điện bán lưới hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("ETDay")),
-    ),
-    SenergySensorDescription(
-        key="e_from_grid_today",
-        name="Điện mua lưới hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("EFDay")),
-    ),
-    SenergySensorDescription(
-        key="e_to_grid_total",
-        name="Tổng điện bán lưới",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("ETTotal")),
-    ),
-    SenergySensorDescription(
-        key="e_from_grid_total",
-        name="Tổng điện mua lưới",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("EFTotal")),
-    ),
+    _num("grid_voltage", "Điện áp lưới", "gridVac", _V, _VOLTAGE, _MEAS),
+    _num("grid_current", "Dòng điện lưới", "gridIac", _A, _CURRENT, _MEAS, **_OFF),
+    _num("grid_frequency", "Tần số lưới", "gridFac", _HZ, _FREQ, _MEAS),
+    _num("grid_power", "Công suất lưới", "gridCurrpac", _W, _POWER, _MEAS),
+    _num("e_to_grid_today", "Điện bán lưới hôm nay", "ETDay", _KWH, _ENERGY, _TOTAL),
+    _num("e_from_grid_today", "Điện mua lưới hôm nay", "EFDay", _KWH, _ENERGY, _TOTAL),
+    _num("e_to_grid_total", "Tổng điện bán lưới", "ETTotal", _KWH, _ENERGY, _TOTAL),
+    _num("e_from_grid_total", "Tổng điện mua lưới", "EFTotal", _KWH, _ENERGY, _TOTAL),
 
     # ---------- Tải tiêu thụ ----------
-    SenergySensorDescription(
-        key="load_voltage",
-        name="Điện áp tải",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("loadVac")),
-    ),
-    SenergySensorDescription(
-        key="load_current",
-        name="Dòng điện tải",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("loadIac")),
-    ),
-    SenergySensorDescription(
-        key="load_frequency",
-        name="Tần số tải",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("loadFac")),
-    ),
-    SenergySensorDescription(
-        key="load_power",
-        name="Công suất tải",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("loadCurrpac")),
-    ),
-    SenergySensorDescription(
-        key="e_load_today",
-        name="Tiêu thụ tải hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("ELDay")),
-    ),
-    SenergySensorDescription(
-        key="e_load_total",
-        name="Tổng tiêu thụ tải",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("ELTotal")),
-    ),
+    _num("load_voltage", "Điện áp tải", "loadVac", _V, _VOLTAGE, _MEAS, **_OFF),
+    _num("load_current", "Dòng điện tải", "loadIac", _A, _CURRENT, _MEAS, **_OFF),
+    _num("load_frequency", "Tần số tải", "loadFac", _HZ, _FREQ, _MEAS, **_OFF),
+    _num("load_power", "Công suất tải", "loadCurrpac", _W, _POWER, _MEAS),
+    _num("e_load_today", "Tiêu thụ tải hôm nay", "ELDay", _KWH, _ENERGY, _TOTAL),
+    _num("e_load_total", "Tổng tiêu thụ tải", "ELTotal", _KWH, _ENERGY, _TOTAL),
 
-    # ---------- Pin (battery bank 1) ----------
-    SenergySensorDescription(
-        key="battery_soc",
-        name="Dung lượng pin (SOC)",
-        native_unit_of_measurement=PERCENTAGE,
-        device_class=SensorDeviceClass.BATTERY,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("SOC")),
-    ),
-    SenergySensorDescription(
-        key="battery_soh",
-        name="Tình trạng sức khoẻ pin (SOH)",
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:battery-heart-variant",
-        value_fn=lambda d: _to_float(d.get("SOH")),
-    ),
-    SenergySensorDescription(
-        key="battery_voltage",
-        name="Điện áp pin",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("volt")),
-    ),
-    SenergySensorDescription(
-        key="battery_current",
-        name="Dòng điện pin",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("cur")),
-    ),
-    SenergySensorDescription(
-        key="battery_temp",
-        name="Nhiệt độ pin",
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("BMS_temp")),
-    ),
-    SenergySensorDescription(
-        key="battery_charge_power",
-        name="Công suất sạc pin",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("batChrg")),
-    ),
-    SenergySensorDescription(
-        key="battery_discharge_power",
-        name="Công suất xả pin",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("batDischrg")),
-    ),
-    SenergySensorDescription(
-        key="battery_power_from",
-        name="Công suất từ pin (fromPbat)",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("fromPbat")),
-    ),
-    SenergySensorDescription(
-        key="battery_power_to",
-        name="Công suất vào pin (toPbat)",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("toPbat")),
-    ),
-    SenergySensorDescription(
-        key="battery_e_charge_total",
-        name="Tổng điện sạc vào pin",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("Etotal_batChrg")),
-    ),
-    SenergySensorDescription(
-        key="battery_e_discharge_total",
-        name="Tổng điện xả từ pin",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _to_float(d.get("Etotal_batDischrg")),
-    ),
-    SenergySensorDescription(
-        key="battery_capacity",
-        name="Dung lượng pin cấu hình",
-        native_unit_of_measurement="Ah",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("capacity")),
-    ),
-    SenergySensorDescription(
-        key="battery_status",
-        name="Trạng thái BMS",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:battery-sync",
-        value_fn=lambda d: d.get("BMS_Status"),
-    ),
-    SenergySensorDescription(
-        key="battery_brand",
-        name="Hãng pin",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("brand"),
-    ),
-    SenergySensorDescription(
-        key="battery_num",
-        name="Số lượng pin",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("Batterynum"),
-    ),
+    # ---------- Pin ----------
+    _num("battery_soc", "Dung lượng pin (SOC)", "SOC", PERCENTAGE,
+         SensorDeviceClass.BATTERY, _MEAS),
+    _num("battery_soh", "Tình trạng sức khoẻ pin (SOH)", "SOH", PERCENTAGE, None, _MEAS,
+         entity_category=_DIAG, icon="mdi:battery-heart-variant"),
+    _num("battery_voltage", "Điện áp pin", "volt", _V, _VOLTAGE, _MEAS),
+    _num("battery_current", "Dòng điện pin", "cur", _A, _CURRENT, _MEAS),
+    _num("battery_temp", "Nhiệt độ pin", "BMS_temp", _C, _TEMP, _MEAS),
+    # Công suất tức thời: toPbat = đang sạc vào pin, fromPbat = đang xả ra (W)
+    _num("battery_charge_power", "Công suất sạc pin", "toPbat", _W, _POWER, _MEAS),
+    _num("battery_discharge_power", "Công suất xả pin", "fromPbat", _W, _POWER, _MEAS),
+    # Điện năng trong ngày: batChrg / batDischrg (kWh, reset mỗi ngày)
+    _num("battery_e_charge_today", "Điện sạc vào pin hôm nay", "batChrg", _KWH,
+         _ENERGY, _TOTAL),
+    _num("battery_e_discharge_today", "Điện xả từ pin hôm nay", "batDischrg", _KWH,
+         _ENERGY, _TOTAL),
+    _num("battery_e_charge_total", "Tổng điện sạc vào pin", "Etotal_batChrg", _KWH,
+         _ENERGY, _TOTAL),
+    _num("battery_e_discharge_total", "Tổng điện xả từ pin", "Etotal_batDischrg", _KWH,
+         _ENERGY, _TOTAL),
+    _num("battery_capacity", "Dung lượng pin cấu hình", "capacity", "Ah", None, None,
+         entity_category=_DIAG, **_OFF),
+    _text("battery_status", "Trạng thái BMS", lambda d: d.get("BMS_Status"),
+          entity_category=_DIAG, icon="mdi:battery-sync"),
+    _text("battery_brand", "Hãng pin", lambda d: d.get("brand"),
+          entity_category=_DIAG, **_OFF),
+    _text("battery_num", "Số lượng pin", lambda d: d.get("Batterynum"),
+          entity_category=_DIAG, **_OFF),
 
     # ---------- EPS (nguồn dự phòng) ----------
-    SenergySensorDescription(
-        key="eps_voltage",
-        name="Điện áp EPS",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("epsVac")),
-    ),
-    SenergySensorDescription(
-        key="eps_current",
-        name="Dòng điện EPS",
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("epsIac")),
-    ),
-    SenergySensorDescription(
-        key="eps_frequency",
-        name="Tần số EPS",
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("epsFac")),
-    ),
-    SenergySensorDescription(
-        key="eps_power",
-        name="Công suất EPS",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _to_float(d.get("epsCurrpac")),
-    ),
-    SenergySensorDescription(
-        key="eps_e_today",
-        name="Điện EPS hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("EPSDay")),
-    ),
-    SenergySensorDescription(
-        key="eps_e_total",
-        name="Tổng điện EPS",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("EPSTotal")),
-    ),
+    _num("eps_voltage", "Điện áp EPS", "epsVac", _V, _VOLTAGE, _MEAS, **_OFF),
+    _num("eps_current", "Dòng điện EPS", "epsIac", _A, _CURRENT, _MEAS, **_OFF),
+    _num("eps_frequency", "Tần số EPS", "epsFac", _HZ, _FREQ, _MEAS, **_OFF),
+    _num("eps_power", "Công suất EPS", "epsCurrpac", _W, _POWER, _MEAS),
+    _num("eps_e_today", "Điện EPS hôm nay", "EPSDay", _KWH, _ENERGY, _TOTAL, **_OFF),
+    _num("eps_e_total", "Tổng điện EPS", "EPSTotal", _KWH, _ENERGY, _TOTAL, **_OFF),
 
-    # ---------- Máy phát điện (Generator) ----------
-    SenergySensorDescription(
-        key="gen_voltage",
-        name="Điện áp máy phát",
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("genVac")),
-    ),
-    SenergySensorDescription(
-        key="gen_power",
-        name="Công suất máy phát",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("genCurrpac")),
-    ),
-    SenergySensorDescription(
-        key="gen_e_today",
-        name="Điện máy phát hôm nay",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("GENDay")),
-    ),
-    SenergySensorDescription(
-        key="gen_e_total",
-        name="Tổng điện máy phát",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("GENTotal")),
-    ),
+    # ---------- Máy phát điện ----------
+    _num("gen_voltage", "Điện áp máy phát", "genVac", _V, _VOLTAGE, _MEAS, **_OFF),
+    _num("gen_power", "Công suất máy phát", "genCurrpac", _W, _POWER, _MEAS, **_OFF),
+    _num("gen_e_today", "Điện máy phát hôm nay", "GENDay", _KWH, _ENERGY, _TOTAL, **_OFF),
+    _num("gen_e_total", "Tổng điện máy phát", "GENTotal", _KWH, _ENERGY, _TOTAL, **_OFF),
 
-    # ---------- Couple (liên kết song song, nếu có) ----------
-    SenergySensorDescription(
-        key="couple_power",
-        name="Công suất couple",
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER,
-        state_class=SensorStateClass.MEASUREMENT,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _to_float(d.get("coupleCurrpac")),
-    ),
+    # ---------- Couple (song song, nếu có) ----------
+    _num("couple_power", "Công suất couple", "coupleCurrpac", _W, _POWER, _MEAS, **_OFF),
 
     # ---------- Trạng thái / chẩn đoán ----------
-    SenergySensorDescription(
-        key="operating_status",
-        name="Trạng thái hoạt động",
-        icon="mdi:state-machine",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: d.get("Operatingstatus"),
-    ),
-    SenergySensorDescription(
-        key="operating_mode",
-        name="Chế độ hoạt động",
-        icon="mdi:cog",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: d.get("Operatingmode"),
-    ),
-    SenergySensorDescription(
-        key="drm_status",
-        name="Trạng thái DRM",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("DRMstatus"),
-    ),
-    SenergySensorDescription(
-        key="dry_contact_status",
-        name="Trạng thái Dry Contact",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("DryContactStatus"),
-    ),
-    SenergySensorDescription(
-        key="connect_type",
-        name="Kiểu kết nối",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("connectType"),
-    ),
-    SenergySensorDescription(
-        key="wifi_strength",
-        name="Cường độ Wifi",
-        native_unit_of_measurement=PERCENTAGE,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:wifi",
-        value_fn=lambda d: _to_float(d.get("WifiStrength")),
-    ),
-    SenergySensorDescription(
-        key="firmware_version",
-        name="Phiên bản firmware",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda d: d.get("FirmwareVersion"),
-    ),
-    SenergySensorDescription(
-        key="csb_version",
-        name="Phiên bản CSB",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("CSBVersion"),
-    ),
-    SenergySensorDescription(
-        key="modbus_version",
-        name="Phiên bản Modbus",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: d.get("ModbusVersion"),
-    ),
-    SenergySensorDescription(
-        key="esp32_version",
-        name="Phiên bản ESP32 Wifi",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _get(d, "ESP32Version", "Version"),
-    ),
-    SenergySensorDescription(
-        key="esp32_sn",
-        name="Serial ESP32 Wifi",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda d: _get(d, "ESP32Version", "SN"),
-    ),
-    SenergySensorDescription(
-        key="esp32_status",
-        name="Trạng thái module Wifi",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        icon="mdi:wifi-check",
-        value_fn=lambda d: _get(d, "ESP32Version", "Status"),
-    ),
+    _text("operating_status", "Trạng thái hoạt động", lambda d: d.get("Operatingstatus"),
+          icon="mdi:state-machine", entity_category=_DIAG),
+    _text("operating_mode", "Chế độ hoạt động", lambda d: d.get("Operatingmode"),
+          icon="mdi:cog", entity_category=_DIAG),
+    _text("drm_status", "Trạng thái DRM", lambda d: d.get("DRMstatus"),
+          entity_category=_DIAG, **_OFF),
+    _text("dry_contact_status", "Trạng thái Dry Contact",
+          lambda d: d.get("DryContactStatus"), entity_category=_DIAG, **_OFF),
+    _text("connect_type", "Kiểu kết nối", lambda d: d.get("connectType"),
+          entity_category=_DIAG, **_OFF),
+    _num("wifi_strength", "Cường độ Wifi", "WifiStrength", PERCENTAGE, None, None,
+         entity_category=_DIAG, icon="mdi:wifi"),
+    _text("firmware_version", "Phiên bản firmware", lambda d: d.get("FirmwareVersion"),
+          entity_category=_DIAG),
+    _text("csb_version", "Phiên bản CSB", lambda d: d.get("CSBVersion"),
+          entity_category=_DIAG, **_OFF),
+    _text("modbus_version", "Phiên bản Modbus", lambda d: d.get("ModbusVersion"),
+          entity_category=_DIAG, **_OFF),
+    _text("esp32_version", "Phiên bản ESP32 Wifi",
+          lambda d: _get(d, "ESP32Version", "Version"), entity_category=_DIAG, **_OFF),
+    _text("esp32_sn", "Serial ESP32 Wifi", lambda d: _get(d, "ESP32Version", "SN"),
+          entity_category=_DIAG, **_OFF),
+    _text("esp32_status", "Trạng thái module Wifi",
+          lambda d: _get(d, "ESP32Version", "Status"), entity_category=_DIAG,
+          icon="mdi:wifi-check"),
 )
 
 
@@ -658,11 +258,10 @@ async def async_setup_entry(
     coordinator: SenergyDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
     goods_id = entry.data[CONF_GOODS_ID]
 
-    entities = [
+    async_add_entities(
         SenergyInverterSensor(coordinator, description, goods_id, entry.title)
         for description in SENSOR_TYPES
-    ]
-    async_add_entities(entities)
+    )
 
 
 class SenergyInverterSensor(CoordinatorEntity[SenergyDataUpdateCoordinator], SensorEntity):
